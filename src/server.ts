@@ -1,7 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { PrismaClient, EstadoCuenta, Rol, EstadoCita } from "../generated/prisma/index.js";
+import { PrismaClient } from "../generated/prisma/index.js";
+import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
@@ -31,7 +32,7 @@ function auth(required = true) {
       req.user = decoded;
       next();
     } catch {
-      if (required) return res.status(401).json({ error: "Token inválido" });
+      if (required) return res.status(401).json({ error: "Token inv?lido" });
       req.user = null;
       next();
     }
@@ -46,26 +47,33 @@ function isStrongPassword(pwd: string) {
   return /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/.test(pwd);
 }
 
+// Seed admin on boot
+async function ensureAdmin() {
+  const adminEmail = "admin@vetchain.com";
+  const exists = await prisma.cuenta.findUnique({ where: { correo: adminEmail } });
+  if (!exists) {
+    const hash = await bcrypt.hash("admin123", 10);
+    await prisma.cuenta.create({ data: { correo: adminEmail, hash, rol: "admin", estado: "active" as any } });
+    console.log("Seeded default admin: admin@vetchain.com / admin123");
+  }
+}
+ensureAdmin().catch(console.error);
+
 // Auth endpoints
+// Registro de dueño: activar inmediatamente (sin confirmación por correo)
 app.post("/auth/register/owner", async (req, res) => {
   const { dni, nombres, apellidos, correo, contrasena, telefono } = req.body || {};
   if (!dni || !nombres || !apellidos || !correo || !contrasena || !telefono) {
-    return res.status(400).json({ error: "Campos obligatorios faltantes" }); // RN24
+    return res.status(400).json({ error: "Campos obligatorios faltantes" });
   }
   if (!isValidEmail(correo)) return res.status(400).json({ error: "Correo inválido" });
-  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "Contraseña no cumple política" }); // RN25
+  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "La contraseña no cumple la política" });
   const exists = await prisma.cuenta.findUnique({ where: { correo } });
-  if (exists) return res.status(409).json({ error: "Correo ya registrado" }); // RN23
+  if (exists) return res.status(409).json({ error: "Correo ya registrado" });
   const hash = await bcrypt.hash(contrasena, 10);
-  const cuenta = await prisma.cuenta.create({
-    data: { correo, hash, rol: Rol.dueno, estado: EstadoCuenta.pending },
-  });
-  await prisma.dueno.create({
-    data: { cuentaId: cuenta.id, dni, nombres, apellidos, telefono },
-  });
-  const token = await prisma.emailConfirmationToken.create({ data: { cuentaId: cuenta.id, token: crypto.randomUUID() } });
-  // En proyecto real: enviar correo con token.token (RN26)
-  return res.status(201).json({ id: cuenta.id, confirmToken: token.token });
+  const cuenta = await prisma.cuenta.create({ data: { correo, hash, rol: 'dueno', estado: 'active' as any } });
+  await prisma.dueno.create({ data: { cuentaId: cuenta.id, dni, nombres, apellidos, telefono } });
+  return res.status(201).json({ id: cuenta.id });
 });
 
 app.post("/auth/register/vet", async (req, res) => {
@@ -73,24 +81,24 @@ app.post("/auth/register/vet", async (req, res) => {
   if (!dni || !nombre || !correo || !contrasena || !especialidad) {
     return res.status(400).json({ error: "Campos obligatorios faltantes" }); // RN29
   }
-  if (!isValidEmail(correo)) return res.status(400).json({ error: "Correo inválido" });
-  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "Contraseña no cumple política" }); // RN25
+  if (!isValidEmail(correo)) return res.status(400).json({ error: "Correo inv?lido" });
+  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "Contrase?a no cumple pol?tica" }); // RN25
   const exists = await prisma.cuenta.findUnique({ where: { correo } });
   if (exists) return res.status(409).json({ error: "Correo ya registrado" }); // RN28
   const hash = await bcrypt.hash(contrasena, 10);
-  const cuenta = await prisma.cuenta.create({ data: { correo, hash, rol: Rol.veterinario, estado: EstadoCuenta.pending } });
+  const cuenta = await prisma.cuenta.create({ data: { correo, hash, rol: 'veterinario', estado: 'pending' } });
   await prisma.veterinario.create({
     data: { cuentaId: cuenta.id, dni, nombre, especialidad, tituloURL, constanciaURL, centroId },
   });
-  return res.status(201).json({ id: cuenta.id }); // RN31 pendiente hasta aprobación admin
+  return res.status(201).json({ id: cuenta.id }); // RN31 pendiente hasta aprobaci?n admin
 });
 
 app.post("/auth/confirm-email", async (req, res) => {
   const { token } = req.body || {};
   const rec = await prisma.emailConfirmationToken.findUnique({ where: { token } });
-  if (!rec || rec.usedAt) return res.status(400).json({ error: "Token inválido" });
+  if (!rec || rec.usedAt) return res.status(400).json({ error: "Token inv?lido" });
   await prisma.$transaction([
-    prisma.cuenta.update({ where: { id: rec.cuentaId }, data: { estado: EstadoCuenta.active, confirmadoEn: new Date() } }),
+    prisma.cuenta.update({ where: { id: rec.cuentaId }, data: { estado: 'active', confirmadoEn: new Date() } }),
     prisma.emailConfirmationToken.update({ where: { id: rec.id }, data: { usedAt: new Date() } }),
   ]);
   return res.json({ ok: true });
@@ -98,22 +106,22 @@ app.post("/auth/confirm-email", async (req, res) => {
 
 app.post("/auth/login", async (req, res) => {
   const { correo, contrasena } = req.body || {};
-  if (!correo || !contrasena) return res.status(400).json({ error: "Debe ingresar correo y contraseña" }); // RN01
+  if (!correo || !contrasena) return res.status(400).json({ error: "Debe ingresar correo y contrase?a" }); // RN01
   const cuenta = await prisma.cuenta.findUnique({ where: { correo } });
-  if (!cuenta) return res.status(401).json({ error: "Credenciales inválidas (correo o contraseña)" }); // RN02
+  if (!cuenta) return res.status(401).json({ error: "Credenciales inv?lidas (correo o contrase?a)" }); // RN02
   const ok = await bcrypt.compare(contrasena, cuenta.hash);
-  if (!ok) return res.status(401).json({ error: "Credenciales inválidas (correo o contraseña)" }); // RN04
-  if (cuenta.estado !== EstadoCuenta.active)
-    return res.status(403).json({ error: "Cuenta no activa o pendiente de aprobación" }); // RN05
+  if (!ok) return res.status(401).json({ error: "Credenciales inv?lidas (correo o contrase?a)" }); // RN04
+  if (cuenta.estado !== 'active')
+    return res.status(403).json({ error: "Cuenta no activa o pendiente de aprobaci?n" }); // RN05
   const token = signJWT({ id: cuenta.id, rol: cuenta.rol });
-  return res.json({ token, rol: cuenta.rol }); // RN06 redirección por rol en front
+  return res.json({ token, rol: cuenta.rol }); // RN06 redirecci?n por rol en front
 });
 
 app.post("/auth/request-password-reset", async (req, res) => {
   const { correo } = req.body || {};
   const cuenta = await prisma.cuenta.findUnique({ where: { correo } });
   if (!cuenta) return res.json({ ok: true }); // ocultar existencia
-  const token = await prisma.passwordResetToken.create({ data: { cuentaId: cuenta.id, token: crypto.randomUUID() } });
+  const token = await prisma.passwordResetToken.create({ data: { cuentaId: cuenta.id, token: randomUUID() } });
   // Enviar correo con token.token (RN12)
   return res.json({ ok: true, token: token.token });
 });
@@ -121,8 +129,8 @@ app.post("/auth/request-password-reset", async (req, res) => {
 app.post("/auth/reset-password", async (req, res) => {
   const { token, contrasena } = req.body || {};
   const rec = await prisma.passwordResetToken.findUnique({ where: { token } });
-  if (!rec || rec.usedAt) return res.status(400).json({ error: "Token inválido" });
-  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "Contraseña no cumple política" });
+  if (!rec || rec.usedAt) return res.status(400).json({ error: "Token inv?lido" });
+  if (!isStrongPassword(contrasena)) return res.status(400).json({ error: "Contrase?a no cumple pol?tica" });
   const hash = await bcrypt.hash(contrasena, 10);
   await prisma.$transaction([
     prisma.cuenta.update({ where: { id: rec.cuentaId }, data: { hash } }),
@@ -150,7 +158,7 @@ app.put("/me", auth(), async (req: any, res) => {
   const cuenta = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
   if (!cuenta) return res.status(404).json({ error: "Cuenta no encontrada" });
   const { correo, telefono, nombres, apellidos, direccion, nombre, especialidad } = req.body || {};
-  if (correo && !isValidEmail(correo)) return res.status(400).json({ error: "Correo inválido" });
+  if (correo && !isValidEmail(correo)) return res.status(400).json({ error: "Correo inv?lido" });
   if (correo && correo !== cuenta.correo) {
     const exists = await prisma.cuenta.findUnique({ where: { correo } });
     if (exists) return res.status(409).json({ error: "Correo ya registrado" }); // RN63
@@ -167,7 +175,7 @@ app.put("/me", auth(), async (req: any, res) => {
 // Account deletion request
 app.post("/account/delete-request", auth(), async (req: any, res) => {
   await prisma.deleteRequest.create({ data: { cuentaId: req.user.id } });
-  return res.json({ ok: true }); // RN14-16: admin aprobará luego
+  return res.json({ ok: true }); // RN14-16: admin aprobar? luego
 });
 
 // Admin endpoints
@@ -175,7 +183,7 @@ app.get("/admin/pending-vets", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
   if (me?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
   const vets = await prisma.veterinario.findMany({
-    where: { cuenta: { estado: EstadoCuenta.pending } },
+    where: { cuenta: { estado: 'pending' as any } },
     include: { cuenta: true },
   });
   return res.json(vets);
@@ -186,7 +194,7 @@ app.post("/admin/vets/:id/approve", auth(), async (req: any, res) => {
   if (me?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
   const vet = await prisma.veterinario.findUnique({ where: { id: req.params.id } });
   if (!vet) return res.status(404).json({ error: "No encontrado" });
-  await prisma.cuenta.update({ where: { id: vet.cuentaId }, data: { estado: EstadoCuenta.active } });
+  await prisma.cuenta.update({ where: { id: vet.cuentaId }, data: { estado: 'active' as any } });
   return res.json({ ok: true });
 });
 
@@ -195,7 +203,7 @@ app.post("/admin/vets/:id/reject", auth(), async (req: any, res) => {
   if (me?.rol !== "admin") return res.status(403).json({ error: "Solo admin" });
   const vet = await prisma.veterinario.findUnique({ where: { id: req.params.id } });
   if (!vet) return res.status(404).json({ error: "No encontrado" });
-  await prisma.cuenta.update({ where: { id: vet.cuentaId }, data: { estado: EstadoCuenta.rejected } });
+  await prisma.cuenta.update({ where: { id: vet.cuentaId }, data: { estado: 'rejected' as any } });
   return res.json({ ok: true });
 });
 
@@ -220,7 +228,7 @@ app.post("/centros", auth(), async (req: any, res) => {
 // Mascotas
 app.get("/pets", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   if (!dueno) return res.json([]);
   const mascotas = await prisma.mascota.findMany({ where: { duenoId: dueno.id } });
@@ -229,7 +237,7 @@ app.get("/pets", auth(), async (req: any, res) => {
 
 app.post("/pets", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   const { nombre, especie, raza, genero, edad, peso, imagenURL, descripcion } = req.body || {};
   if (!nombre || !especie || !genero || !raza || typeof edad !== "number")
@@ -240,13 +248,13 @@ app.post("/pets", auth(), async (req: any, res) => {
     });
     return res.status(201).json(mascota);
   } catch (e: any) {
-    return res.status(409).json({ error: "Duplicado para este dueño (nombre+especie+edad)" }); // RN68
+    return res.status(409).json({ error: "Duplicado para este due?o (nombre+especie+edad)" }); // RN68
   }
 });
 
 app.put("/pets/:id", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   const pet = await prisma.mascota.findUnique({ where: { id: req.params.id } });
   if (!pet || pet.duenoId !== dueno?.id) return res.status(404).json({ error: "Mascota no encontrada" }); // RN85
@@ -255,13 +263,13 @@ app.put("/pets/:id", auth(), async (req: any, res) => {
     const updated = await prisma.mascota.update({ where: { id: pet.id }, data });
     return res.json(updated);
   } catch {
-    return res.status(409).json({ error: "Cambios generarían duplicado" }); // RN87
+    return res.status(409).json({ error: "Cambios generar?an duplicado" }); // RN87
   }
 });
 
 app.delete("/pets/:id", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   const pet = await prisma.mascota.findUnique({ where: { id: req.params.id } });
   if (!pet || pet.duenoId !== dueno?.id) return res.status(404).json({ error: "Mascota no encontrada" });
@@ -272,7 +280,7 @@ app.delete("/pets/:id", auth(), async (req: any, res) => {
 // Citas
 app.get("/citas/owner", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   const citas = await prisma.cita.findMany({ where: { duenoId: dueno!.id }, orderBy: { fecha: "asc" } });
   return res.json(citas);
@@ -288,11 +296,11 @@ app.get("/citas/vet", auth(), async (req: any, res) => {
 
 app.post("/citas", auth(), async (req: any, res) => {
   const me = await prisma.cuenta.findUnique({ where: { id: req.user.id } });
-  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo dueños" });
+  if (me?.rol !== "dueno") return res.status(403).json({ error: "Solo due?os" });
   const dueno = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
   const { motivo, fechaISO, horaTexto, centroId, veterinarioId, mascotaId, consultorioId } = req.body || {};
   const fecha = new Date(fechaISO);
-  const collide = await prisma.cita.findFirst({ where: { veterinarioId, fecha, horaTexto, estado: { not: EstadoCita.Cancelada } } });
+  const collide = await prisma.cita.findFirst({ where: { veterinarioId, fecha, horaTexto, estado: { not: 'Cancelada' as any } } });
   if (collide) return res.status(409).json({ error: "Horario no disponible" });
   const cita = await prisma.cita.create({
     data: {
@@ -314,15 +322,15 @@ app.get("/historial/:mascotaId", auth(), async (req: any, res) => {
   const mascota = await prisma.mascota.findUnique({ where: { id: req.params.mascotaId } });
   if (!mascota) return res.status(404).json({ error: "Mascota no encontrada" });
   if (me?.rol === "dueno") {
-    const dueño = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
-    if (mascota.duenoId !== dueño?.id) return res.status(403).json({ error: "No autorizado" });
+    const duenoCuenta = await prisma.dueno.findUnique({ where: { cuentaId: me.id } });
+    if (mascota.duenoId !== duenoCuenta?.id) return res.status(403).json({ error: "No autorizado" });
   }
   if (me?.rol === "veterinario") {
     const vet = await prisma.veterinario.findUnique({ where: { cuentaId: me.id } });
     const attended = await prisma.cita.findFirst({ where: { mascotaId: mascota.id, veterinarioId: vet!.id } });
-    if (!attended) return res.status(403).json({ error: "Restricción de acceso" }); // RN56
+    if (!attended) return res.status(403).json({ error: "Restricci?n de acceso" }); // RN56
   }
-  const citas = await prisma.cita.findMany({ where: { mascotaId: mascota.id, estado: EstadoCita.Atendida }, orderBy: { fecha: "asc" } });
+  const citas = await prisma.cita.findMany({ where: { mascotaId: mascota.id, estado: 'Atendida' as any }, orderBy: { fecha: "asc" } });
   return res.json(citas);
 });
 
@@ -334,16 +342,14 @@ app.patch("/citas/:id/atender", auth(), async (req: any, res) => {
   const cita = await prisma.cita.findUnique({ where: { id: req.params.id } });
   if (!cita) return res.status(404).json({ error: "Cita no encontrada" });
   const hist = await prisma.historialClinico.findUnique({ where: { mascotaId: cita.mascotaId } });
-  await prisma.cita.update({
-    where: { id: cita.id },
-    data: {
-      estado: EstadoCita.Atendida,
-      hallazgos: JSON.stringify(hallazgos || []),
-      prueba,
-      tratamiento,
-      historialId: hist?.id,
-    },
-  });
+  const data: any = {
+    estado: 'Atendida' as any,
+    hallazgos: JSON.stringify(hallazgos || []),
+    prueba,
+    tratamiento,
+  };
+  if (hist) data.historial = { connect: { id: hist.id } };
+  await prisma.cita.update({ where: { id: cita.id }, data });
   return res.json({ ok: true });
 });
 
@@ -351,3 +357,7 @@ const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`VetChain API listening on port ${port}`);
 });
+
+
+
+
