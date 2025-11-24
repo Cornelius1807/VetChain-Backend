@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/prisma"
@@ -14,7 +8,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Enums
 enum Rol {
   dueno
   veterinario
@@ -33,9 +26,16 @@ enum EstadoCita {
   Confirmada
   Atendida
   Cancelada
+  Rechazada
 }
 
-/// Core auth/account
+enum EstadoSlot {
+  LIBRE
+  RESERVADO
+  BLOQUEADO
+  FUERA_RANGO
+}
+
 model Cuenta {
   id           String       @id @default(uuid())
   correo       String       @unique
@@ -49,10 +49,10 @@ model Cuenta {
   dueno       Dueno?
   veterinario Veterinario?
 
-  // Password reset and deletion
-  resetTokens PasswordResetToken[]
-  deleteReqs  DeleteRequest[]
-  emailTokens EmailConfirmationToken[]
+  resetTokens    PasswordResetToken[]
+  emailTokens    EmailConfirmationToken[]
+  deleteReqs     DeleteRequest[]
+  notificaciones Notificacion[]
 }
 
 model PasswordResetToken {
@@ -76,13 +76,13 @@ model EmailConfirmationToken {
 model DeleteRequest {
   id         String    @id @default(uuid())
   cuentaId   String
+  motivo     String?
   createdAt  DateTime  @default(now())
   approvedAt DateTime?
   rejectedAt DateTime?
   cuenta     Cuenta    @relation(fields: [cuentaId], references: [id])
 }
 
-/// Personas
 model Dueno {
   id        String  @id @default(uuid())
   cuentaId  String  @unique
@@ -102,45 +102,80 @@ model Veterinario {
   cuentaId         String  @unique
   dni              String  @unique
   nombre           String
+  apellidos        String?
   telefono         String?
   especialidad     String
+  centroId         String?
   tituloURL        String?
   constanciaURL    String?
-  fotoURL          String?
-  centroId         String?
   puedeCrearCentro Boolean @default(false)
 
-  cuenta Cuenta             @relation(fields: [cuentaId], references: [id])
-  centro CentroVeterinario? @relation(fields: [centroId], references: [id])
-  citas  Cita[]
+  cuenta         Cuenta              @relation(fields: [cuentaId], references: [id])
+  centro         CentroVeterinario?  @relation("CentroAsignado", fields: [centroId], references: [id])
+  programaciones Programacion[]
+  slots          HorarioSlot[]
+  citas          Cita[]
+  centrosCreados CentroVeterinario[] @relation("CentroCreador")
 }
 
-/// Centros y consultorios
 model CentroVeterinario {
   id                  String  @id @default(uuid())
   nombre              String
   direccion           String
   telefono            String?
   email               String?
-  rangoAtencionInicio String? // HH:mm
+  rangoAtencionInicio String?
   rangoAtencionFin    String?
-  rangoConsultaInicio String? // HH:mm
+  rangoConsultaInicio String?
   rangoConsultaFin    String?
+  creadoPorVetId      String?
 
+  creadoPor    Veterinario?  @relation("CentroCreador", fields: [creadoPorVetId], references: [id])
   consultorios Consultorio[]
-  veterinarios Veterinario[]
+  veterinarios Veterinario[] @relation("CentroAsignado")
   citas        Cita[]
+  slots        HorarioSlot[]
 }
 
 model Consultorio {
-  id       String            @id @default(uuid())
-  nombre   String
+  id       String @id @default(uuid())
   centroId String
-  centro   CentroVeterinario @relation(fields: [centroId], references: [id])
-  citas    Cita[]
+  nombre   String
+
+  centro CentroVeterinario @relation(fields: [centroId], references: [id])
+  slots  HorarioSlot[]
+  citas  Cita[]
 }
 
-/// Mascotas e historiales
+model Programacion {
+  id            String   @id @default(uuid())
+  veterinarioId String
+  fechaInicio   DateTime
+  fechaFin      DateTime
+  creadoEn      DateTime @default(now())
+
+  veterinario Veterinario   @relation(fields: [veterinarioId], references: [id])
+  slots       HorarioSlot[]
+}
+
+model HorarioSlot {
+  id             String     @id @default(uuid())
+  veterinarioId  String
+  centroId       String?
+  consultorioId  String?
+  programacionId String?
+  fechaInicio    DateTime
+  fechaFin       DateTime
+  estado         EstadoSlot @default(LIBRE)
+  motivo         String?
+
+  veterinario  Veterinario        @relation(fields: [veterinarioId], references: [id])
+  centro       CentroVeterinario? @relation(fields: [centroId], references: [id])
+  consultorio  Consultorio?       @relation(fields: [consultorioId], references: [id])
+  programacion Programacion?      @relation(fields: [programacionId], references: [id])
+  Cita         Cita?
+}
+
 model Mascota {
   id          String  @id @default(uuid())
   duenoId     String
@@ -156,6 +191,7 @@ model Mascota {
 
   dueno     Dueno             @relation(fields: [duenoId], references: [id])
   historial HistorialClinico?
+  resumen   ResumenMedico?    @relation("MascotaResumen")
   citas     Cita[]
 
   @@unique([duenoId, nombre, especie, edad])
@@ -165,38 +201,65 @@ model HistorialClinico {
   id        String  @id @default(uuid())
   mascotaId String  @unique
   mascota   Mascota @relation(fields: [mascotaId], references: [id])
-  entradas  Cita[]
+  entradas  Cita[]  @relation("HistorialCitas")
 }
 
-/// Citas y atención
-model Cita {
-  id        String     @id @default(uuid())
-  motivo    String
-  fecha     DateTime
-  estado    EstadoCita @default(Programada)
-  creadoEn  DateTime   @default(now())
-  horaTexto String // HH:mm para filtros sencillos
+model ResumenMedico {
+  id          String   @id @default(uuid())
+  mascotaId   String   @unique
+  resumen     String?
+  actualizado DateTime @default(now())
 
-  centroId      String
-  centro        CentroVeterinario @relation(fields: [centroId], references: [id])
+  mascota Mascota @relation("MascotaResumen", fields: [mascotaId], references: [id])
+}
+
+model Cita {
+  id                String     @id @default(uuid())
+  motivo            String
+  fecha             DateTime
+  estado            EstadoCita @default(Programada)
+  creadoEn          DateTime   @default(now())
+  motivoCancelacion String?
+
+  centroId String
+  centro   CentroVeterinario @relation(fields: [centroId], references: [id])
+
   consultorioId String?
-  consultorio   Consultorio?      @relation(fields: [consultorioId], references: [id])
+  consultorio   Consultorio? @relation(fields: [consultorioId], references: [id])
 
   veterinarioId String
   veterinario   Veterinario @relation(fields: [veterinarioId], references: [id])
 
-  mascotaId String
-  mascota   Mascota @relation(fields: [mascotaId], references: [id])
-
-  // relación con historial clínico (opcional, se establece al atender)
-  historialId String?
-  historial   HistorialClinico? @relation(fields: [historialId], references: [id])
-
   duenoId String
   dueno   Dueno  @relation(fields: [duenoId], references: [id])
 
-  // Atención
-  hallazgos   String? // JSON string de array de strings
-  prueba      String?
+  mascotaId String
+  mascota   Mascota @relation(fields: [mascotaId], references: [id])
+
+  slotId String?      @unique
+  slot   HorarioSlot? @relation(fields: [slotId], references: [id])
+
+  hallazgos   String?
+  pruebas     String?
   tratamiento String?
+
+  historialId String?
+  historial   HistorialClinico? @relation("HistorialCitas", fields: [historialId], references: [id])
+
+  notificaciones Notificacion[]
+}
+
+model Notificacion {
+  id            String    @id @default(uuid())
+  cuentaId      String?
+  correoDestino String
+  tipo          String
+  payload       Json
+  estado        String    @default("pendiente")
+  createdAt     DateTime  @default(now())
+  enviadoAt     DateTime?
+  citaId        String?
+
+  cuenta Cuenta? @relation(fields: [cuentaId], references: [id])
+  cita   Cita?   @relation(fields: [citaId], references: [id])
 }

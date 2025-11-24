@@ -29,7 +29,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.10.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -37,6 +38,7 @@
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^24.8.0",
+    "@types/nodemailer": "^6.4.12",
     "prisma": "^6.17.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.6",
